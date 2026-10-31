@@ -4,7 +4,9 @@ VRChat（PC 版）の **キャッシュ** と **カメラ写真** の保存先�
 
 VRChat 公式の設定ファイル `config.json` を書き換えるだけで、VRChat 本体の改造や、ジャンクション／シンボリックリンクの作成は一切行いません。
 
-- 公式ドキュメント: https://docs.vrchat.com/docs/configuration-file
+- 公式ドキュメント（英語）: https://docs.vrchat.com/docs/configuration-file
+
+このツールは公式の手順を自動化したもので、仕組みはシンプルです。手作業でも同じことができるので、中身を確認したい方や手で設定したい方は、上の公式ドキュメントの `cache_directory` と `picture_output_folder` の項目をご覧ください。
 
 ## 保存先を移すメリット
 
