@@ -14,7 +14,7 @@ Set-StrictMode -Version 2
 $ErrorActionPreference = 'Stop'
 
 $script:AppName = 'VRC Cache Mover'
-$script:Version = '1.0.0'
+$script:Version = '1.0.1'
 $script:ConfigPath = Join-Path $VrcDir 'config.json'
 $script:MinCacheGB = 30   # 公式: 既定値より小さくはできない
 
@@ -122,7 +122,8 @@ function Test-TargetFolder([string] $Path, [int] $NeedGB) {
         # 外付け HDD/SSD は Fixed と報告されるので、バスの種類も見る。取れない環境では諦める
         try { $isUsb = ((Get-Partition -DriveLetter $drive[0] -ErrorAction Stop | Get-Disk -ErrorAction Stop).BusType -eq 'USB') } catch { }
     }
-    if ($isUsb) { $warns.Add("$drive は USB 接続のドライブです。外れている間は保存に失敗します") }
+    # 外れたときに VRChat がどう振る舞うかは未検証なので、断定しない
+    if ($isUsb) { $warns.Add("$drive は USB 接続のドライブです。外れている・ドライブ文字が変わると、保存先が見つからなくなる可能性があります") }
     return [pscustomobject]@{ Errors = @($errs); Warnings = @($warns); FullPath = $full }
 }
 
