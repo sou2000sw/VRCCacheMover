@@ -1,0 +1,19 @@
+# 配布物・テストの生成物
+dist/
+tests/_work/
+*.log
+
+# 秘密情報・個人データ（全プロジェクト共通の除外）
+venv/
+.venv/
+env/
+node_modules/
+models/
+__pycache__/
+*.pyc
+.env*
+*token*
+*secret*
+*credential*
+*.key
+id_rsa
