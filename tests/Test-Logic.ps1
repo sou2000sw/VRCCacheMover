@@ -121,6 +121,14 @@ try {
     $c = Get-OldCache
     Assert-True '9 found both' ((-not $c.Blocked) -and $c.Targets.Count -eq 2 -and $c.Bytes -eq 1024 -and $c.Files -eq 2)
     Assert-True '9 new location empty' (-not $c.NewHasData)
+    # 手で書いた config.json が今のキャッシュの場所を指していたら消さない
+    [IO.File]::WriteAllText($cfgPath, ('{"cache_directory":"' + ($vrc -replace '\\', '/') + '/"}'), $noBom)
+    Assert-True '9 same as vrc dir blocked' ([bool](Get-OldCache).Blocked)
+    [IO.File]::WriteAllText($cfgPath, '{"cache_directory":"   "}', $noBom)
+    Assert-True '9 blank setting blocked' ([bool](Get-OldCache).Blocked)
+    [IO.File]::WriteAllText($cfgPath, ('{"cache_directory":"' + ($newCache -replace '\\', '/') + '"}'), $noBom)
+    [IO.File]::WriteAllText((Join-Path $oldCache 'ro.bin'), 'x')
+    Set-ItemProperty -LiteralPath (Join-Path $oldCache 'ro.bin') -Name IsReadOnly -Value $true
     # 中にジャンクションがあれば消さない。リンク先も無事であること
     $outside = Join-Path $work 'outside'
     New-Item -ItemType Directory $outside -Force | Out-Null
@@ -134,6 +142,19 @@ try {
     Assert-True '9 caches deleted' (-not (Test-Path $oldCache) -and -not (Test-Path $oldTex))
     Assert-True '9 others kept' ((Test-Path $cfgPath) -and (Test-Path (Join-Path $vrc 'output_log_test.txt')))
     Assert-True '9 nothing left blocked' ([bool](Get-OldCache).Blocked)
+    [IO.File]::WriteAllText($oldCache, 'not a folder')   # 同じ名前のファイルは対象にしない
+    Assert-True '9 same-name file ignored' ([bool](Get-OldCache).Blocked -and (Test-Path $oldCache))
+
+    # 10. パスの細部
+    Assert-True '10 drive root kept' ((Get-NativeFullPath 'C:') -eq 'C:\' -and (Get-NativeFullPath 'C:/') -eq 'C:\')
+    Assert-True '10 trailing slash trimmed' ((Get-NativeFullPath 'C:\abc\') -eq 'C:\abc')
+    $picIni = Join-Path $work 'pic_ini'
+    New-Item -ItemType Directory (Join-Path $picIni '2025-05') -Force | Out-Null
+    [IO.File]::WriteAllText((Join-Path $picIni 'desktop.ini'), 'x')
+    (Get-Item -LiteralPath (Join-Path $picIni 'desktop.ini')).Attributes = 'Hidden'
+    Assert-True '10 no photos no move' ($null -eq (Get-PictureMove $picIni $picNew))
+    [IO.File]::WriteAllText((Join-Path $picReal 'a.png'), 'x')
+    Assert-True '10 link target no move' ($null -eq (Get-PictureMove $picReal $picDef))
 } finally {
     if (Test-Path $picDef) { cmd /c rmdir "$picDef" | Out-Null }
 }

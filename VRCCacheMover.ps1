@@ -74,7 +74,12 @@ function ConvertTo-ConfigPath([string] $Path) {
 }
 
 function Get-NativeFullPath([string] $Path) {
-    return [IO.Path]::GetFullPath(($Path.Trim() -replace '/', '\')).TrimEnd('\')
+    # 'C:' のままだと GetFullPath がそのドライブのカレントフォルダを返す。ドライブ直下は 'C:\' で表す
+    $p = $Path.Trim() -replace '/', '\'
+    if ($p -match '^[A-Za-z]:$') { $p += '\' }
+    $full = [IO.Path]::GetFullPath($p)
+    if ($full.Length -gt 3) { $full = $full.TrimEnd('\') }
+    return $full
 }
 
 function Test-SamePath([string] $A, [string] $B) {
@@ -113,7 +118,10 @@ function Get-PictureMove([string] $OldSetting, [string] $NewSetting) {
     $fromNative = $from -replace '/', '\'
     if (-not (Test-Path -LiteralPath $fromNative)) { return $null }
     if ((Get-Item -LiteralPath $fromNative -Force).LinkType) { return $null }   # リンクは既存の警告に任せる
-    if (-not (Get-ChildItem -LiteralPath $fromNative -Force | Select-Object -First 1)) { return $null }
+    $toNative = $to -replace '/', '\'
+    if ((Test-Path -LiteralPath $toNative) -and (Get-Item -LiteralPath $toNative -Force).LinkType) { return $null }   # 移す先がリンクなら実体は同じかもしれない
+    # 空の月別フォルダや desktop.ini（隠しファイル）しか無いなら、移す写真は無い
+    if (-not (Get-ChildItem -LiteralPath $fromNative -Recurse -File | Where-Object { $_.Name -ne 'desktop.ini' } | Select-Object -First 1)) { return $null }
     return [pscustomobject]@{ From = (Get-NativeFullPath $from); To = (Get-NativeFullPath $to); OnOneDrive = (Test-UnderOneDrive $from) }
 }
 
@@ -135,7 +143,7 @@ function Test-TargetFolder([string] $Path, [int] $NeedGB) {
         $errs.Add("ドライブ $drive が見つかりません")
         return [pscustomobject]@{ Errors = @($errs); Warnings = @($warns); FullPath = $full }
     }
-    if ($full.Length -le 2) { $warns.Add('ドライブ直下は他のファイルと混ざります。フォルダを作って指定するのがおすすめです') }
+    if ($full.Length -le 3) { $warns.Add('ドライブ直下は他のファイルと混ざります。フォルダを作って指定するのがおすすめです') }
     if ($drive -ieq $env:SystemDrive) { $warns.Add("$drive はシステムドライブです（書き込みを減らす目的なら別ドライブへ）") }
     $di = New-Object System.IO.DriveInfo($drive)
     $freeGB = [math]::Floor($di.AvailableFreeSpace / 1GB)
@@ -196,7 +204,7 @@ function New-ChangePlan {
     if (Test-VrcRunning) { $errs.Add('VRChat が起動中です。終了してから適用してください') }
     if (-not (Test-Path -LiteralPath $VrcDir)) { $errs.Add("VRChat のフォルダがありません（$VrcDir）。一度 VRChat を起動してから実行してください") }
 
-    $move = Get-PictureMove $oldPic $PictureDir
+    $move = $(if ($errs.Count -eq 0) { Get-PictureMove $oldPic $PictureDir } else { $null })
     return [pscustomobject]@{ Data = $data; Errors = @($errs); Warnings = @($warns); Folders = @($folders); PictureMove = $move }
 }
 
@@ -243,6 +251,19 @@ function Measure-Folder([string] $Path) {
     return [pscustomobject]@{ Bytes = $bytes; Files = $files; Links = $links }
 }
 
+function Clear-ReadOnly([string] $Path) {
+    # 読み取り専用が1つでもあると Directory.Delete が途中で止まる。リンクの中には入らない
+    $stack = New-Object 'System.Collections.Generic.Stack[System.IO.DirectoryInfo]'
+    $stack.Push((New-Object System.IO.DirectoryInfo $Path))
+    while ($stack.Count -gt 0) {
+        foreach ($e in $stack.Pop().EnumerateFileSystemInfos()) {
+            if ($e.Attributes -band [IO.FileAttributes]::ReparsePoint) { continue }
+            if ($e.Attributes -band [IO.FileAttributes]::ReadOnly) { $e.Attributes = $e.Attributes -bxor [IO.FileAttributes]::ReadOnly }
+            if ($e -is [System.IO.DirectoryInfo]) { $stack.Push($e) }
+        }
+    }
+}
+
 function Test-ReparsePoint([string] $Path) {
     return [bool]((Get-Item -LiteralPath $Path -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)
 }
@@ -252,14 +273,17 @@ function Get-OldCache {
     $blocked = { param($Reason) [pscustomobject]@{ Blocked = $Reason; Targets = @(); Bytes = [long]0; Files = 0; NewHasData = $false } }
     if (Test-VrcRunning) { return & $blocked 'VRChat が起動中です。終了してから削除してください' }
     $cacheDir = [string](Get-ConfigValue (Read-VrcConfig).Data 'cache_directory')
-    if (-not $cacheDir) { return & $blocked 'キャッシュの保存先が既定のままです。先に保存先を移して適用してください' }
+    # 手で書いた config.json で空白だけ・VRChat のフォルダそのものを指している場合も、今使っているキャッシュなので消さない
+    $notMoved = (-not $cacheDir.Trim())
+    if (-not $notMoved) { try { $notMoved = Test-SamePath $cacheDir $VrcDir } catch { $notMoved = $true } }
+    if ($notMoved) { return & $blocked 'キャッシュの保存先が既定のままです。先に保存先を移して適用してください' }
     if (-not (Test-Path -LiteralPath $VrcDir)) { return & $blocked "VRChat のフォルダがありません（$VrcDir）" }
     if (Test-ReparsePoint $VrcDir) { return & $blocked "VRChat のフォルダがリンクになっているため、削除しません（$VrcDir）" }
     $targets = New-Object System.Collections.Generic.List[string]
     $bytes = [long]0; $files = 0
     foreach ($name in $script:OldCacheNames) {
         $p = Join-Path $VrcDir $name
-        if (-not (Test-Path -LiteralPath $p)) { continue }
+        if (-not (Test-Path -LiteralPath $p -PathType Container)) { continue }
         if (Test-ReparsePoint $p) { return & $blocked "古いキャッシュのフォルダがリンクになっているため、削除しません（$p）" }
         $m = Measure-Folder $p
         if ($m.Links -gt 0) { return & $blocked "古いキャッシュの中にリンクがあるため、削除しません（$p）" }
@@ -277,7 +301,7 @@ function Remove-OldCache($Info) {
     foreach ($p in $Info.Targets) {
         # 調べてから消すまでの間にリンクへ差し替わっていないか、消す直前にもう一度見る
         if (Test-ReparsePoint $p) { throw "リンクになっているため、削除を中止しました（$p）" }
-        try { [IO.Directory]::Delete($p, $true) }
+        try { Clear-ReadOnly $p; [IO.Directory]::Delete($p, $true) }
         catch { throw "削除できないファイルがありました（$p）。途中まで削除されています。`n$($_.Exception.Message)" }
     }
 }
@@ -361,7 +385,7 @@ $chkAutoSub.Location = New-Object System.Drawing.Point(14, 312); $chkAutoSub.Siz
 $chkAutoSub.Checked = $true
 $form.Controls.Add($chkAutoSub)
 
-$lblNote = New-UiLabel '指定したフォルダが無ければ適用時に作ります。古いキャッシュは自動では消しません（「古いキャッシュを削除」で確認してから消せます）。' 12 340 620
+$lblNote = New-UiLabel 'フォルダが無ければ適用時に作ります。古いキャッシュは自動では消さず、「古いキャッシュを削除」で消せます。' 12 340 620
 $form.Controls.Add($lblNote)
 $btnOpenOld = New-UiButton '元のキャッシュの場所を開く' 12 370 190
 $btnOpenPics = New-UiButton '写真フォルダを開く' 210 370 140
@@ -399,8 +423,19 @@ $btnPicReset.Add_Click({ $txtPic.Text = ''; $chkSplit.Checked = $true })
 $btnOpenOld.Add_Click({ if (Test-Path -LiteralPath $VrcDir) { Start-Process explorer.exe $VrcDir } })
 $btnOpenPics.Add_Click({
     # 適用直後は移す元と先、それ以外は既定と指定先を開く
-    $dirs = $(if ($script:PictureMove) { @($script:PictureMove.From, $script:PictureMove.To) } else { @($PictureDefaultDir, ($txtPic.Text.Trim() -replace '/', '\')) })
-    foreach ($d in @($dirs | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -Unique)) { Start-Process explorer.exe ('"{0}"' -f $d) }
+    try {
+        $dirs = $(if ($script:PictureMove) { @($script:PictureMove.From, $script:PictureMove.To) } else { @($PictureDefaultDir, $txtPic.Text) })
+        $seen = @{}
+        foreach ($d in $dirs) {
+            if (-not $d.Trim()) { continue }
+            $full = Get-NativeFullPath $d
+            if ($seen.ContainsKey($full.ToLowerInvariant()) -or -not (Test-Path -LiteralPath $full)) { continue }
+            $seen[$full.ToLowerInvariant()] = $true
+            Start-Process explorer.exe ('"{0}"' -f $full)
+        }
+    } catch {
+        Show-Message $_.Exception.Message 'Error'
+    }
 })
 $btnDeleteOld.Add_Click({
     try {
