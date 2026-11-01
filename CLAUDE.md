@@ -8,7 +8,7 @@ BOOTH（無料＋支援枠）と GitHub で MIT ライセンス配布する。
 - ログの移動は対象外（公式手段がない）。入れるなら「古いログの退避」で、リンク方式は採らない。
 - 既存の `config.json` は読み込んでから対象キーだけ差し替える。読めない JSON は上書きしない。書く前に `.bak-日時` を残す。
 - `config.json` は **BOM なし** UTF-8 で書く。`.ps1` は **BOM 付き** UTF-8 で保存する（5.1 が cp932 で読んで日本語が壊れるため）。
-- VRChat 起動中は適用しない。古いキャッシュは自動で消さない。
+- VRChat 起動中は適用しない。古いキャッシュは自動で消さない（ユーザーが「古いキャッシュを削除」で確認したときだけ。消すのは既定の場所の `Cache-WindowsPlayer` / `TextureDiskCache-WindowsPlayer` のみで、中にリンクがあれば消さない）。
 - 配布物のファイル名は ASCII のみ（zip 展開時の文字化け対策）。
 
 ## Local Knowledge Base Access

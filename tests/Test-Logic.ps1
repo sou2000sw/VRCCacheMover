@@ -102,6 +102,38 @@ try {
     $p8 = New-ChangePlan -CacheDir '' -CacheSizeGB 30 -PictureDir $picNew -SplitByDate $true
     Assert-True '8 plan has move' ($p8.PictureMove -and $p8.PictureMove.From -ieq $picOld)
     Assert-True '8 photo untouched' (Test-Path (Join-Path $picOld '2025-04\a.png'))
+
+    # 9. 古いキャッシュの削除（既定の場所の決まったフォルダだけ。リンクを含むなら消さない）
+    $oldCache = Join-Path $vrc 'Cache-WindowsPlayer'
+    $oldTex = Join-Path $vrc 'TextureDiskCache-WindowsPlayer'
+    New-Item -ItemType Directory (Join-Path $oldCache 'abc\def') -Force | Out-Null
+    New-Item -ItemType Directory $oldTex -Force | Out-Null
+    [IO.File]::WriteAllBytes((Join-Path $oldCache 'abc\def\__data'), (New-Object byte[] 1000))
+    [IO.File]::WriteAllBytes((Join-Path $oldTex 't.bin'), (New-Object byte[] 24))
+    [IO.File]::WriteAllText((Join-Path $vrc 'output_log_test.txt'), 'log')
+    [IO.File]::WriteAllText($cfgPath, '{"camera_res_height":1080}', $noBom)
+    Assert-True '9 default location blocked' ([bool](Get-OldCache).Blocked)
+    $newCache = Join-Path $work 'newcache'
+    [IO.File]::WriteAllText($cfgPath, ('{"cache_directory":"' + ($newCache -replace '\\', '/') + '"}'), $noBom)
+    function Test-VrcRunning { $true }
+    Assert-True '9 running blocked' ([bool](Get-OldCache).Blocked)
+    function Test-VrcRunning { $false }
+    $c = Get-OldCache
+    Assert-True '9 found both' ((-not $c.Blocked) -and $c.Targets.Count -eq 2 -and $c.Bytes -eq 1024 -and $c.Files -eq 2)
+    Assert-True '9 new location empty' (-not $c.NewHasData)
+    # 中にジャンクションがあれば消さない。リンク先も無事であること
+    $outside = Join-Path $work 'outside'
+    New-Item -ItemType Directory $outside -Force | Out-Null
+    [IO.File]::WriteAllText((Join-Path $outside 'keep.txt'), 'keep')
+    $inLink = Join-Path $oldCache 'link'
+    cmd /c mklink /J "$inLink" "$outside" | Out-Null
+    Assert-True '9 inner link blocked' ([bool](Get-OldCache).Blocked)
+    cmd /c rmdir "$inLink" | Out-Null
+    Assert-True '9 link target kept' (Test-Path (Join-Path $outside 'keep.txt'))
+    Remove-OldCache (Get-OldCache)
+    Assert-True '9 caches deleted' (-not (Test-Path $oldCache) -and -not (Test-Path $oldTex))
+    Assert-True '9 others kept' ((Test-Path $cfgPath) -and (Test-Path (Join-Path $vrc 'output_log_test.txt')))
+    Assert-True '9 nothing left blocked' ([bool](Get-OldCache).Blocked)
 } finally {
     if (Test-Path $picDef) { cmd /c rmdir "$picDef" | Out-Null }
 }

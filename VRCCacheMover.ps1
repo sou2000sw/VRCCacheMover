@@ -225,6 +225,63 @@ function Join-AutoSubfolder([string] $Selected, [string] $SubName) {
     return (Join-Path $Selected $SubName)
 }
 
+# ---------- 古いキャッシュの削除（ユーザーが確認したときだけ） ----------
+
+$script:OldCacheNames = @('Cache-WindowsPlayer', 'TextureDiskCache-WindowsPlayer')
+
+function Measure-Folder([string] $Path) {
+    # Get-ChildItem -Recurse は 5.1 でジャンクションの先までたどるので、自前で歩いてリンクは数えるだけにする
+    $bytes = [long]0; $files = 0; $links = 0
+    $stack = New-Object 'System.Collections.Generic.Stack[System.IO.DirectoryInfo]'
+    $stack.Push((New-Object System.IO.DirectoryInfo $Path))
+    while ($stack.Count -gt 0) {
+        foreach ($e in $stack.Pop().EnumerateFileSystemInfos()) {
+            if ($e.Attributes -band [IO.FileAttributes]::ReparsePoint) { $links++; continue }
+            if ($e -is [System.IO.DirectoryInfo]) { $stack.Push($e) } else { $bytes += $e.Length; $files++ }
+        }
+    }
+    return [pscustomobject]@{ Bytes = $bytes; Files = $files; Links = $links }
+}
+
+function Test-ReparsePoint([string] $Path) {
+    return [bool]((Get-Item -LiteralPath $Path -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)
+}
+
+function Get-OldCache {
+    # 消してよいのは、保存先を移した後の既定の場所にある決まった名前のフォルダだけ
+    $blocked = { param($Reason) [pscustomobject]@{ Blocked = $Reason; Targets = @(); Bytes = [long]0; Files = 0; NewHasData = $false } }
+    if (Test-VrcRunning) { return & $blocked 'VRChat が起動中です。終了してから削除してください' }
+    $cacheDir = [string](Get-ConfigValue (Read-VrcConfig).Data 'cache_directory')
+    if (-not $cacheDir) { return & $blocked 'キャッシュの保存先が既定のままです。先に保存先を移して適用してください' }
+    if (-not (Test-Path -LiteralPath $VrcDir)) { return & $blocked "VRChat のフォルダがありません（$VrcDir）" }
+    if (Test-ReparsePoint $VrcDir) { return & $blocked "VRChat のフォルダがリンクになっているため、削除しません（$VrcDir）" }
+    $targets = New-Object System.Collections.Generic.List[string]
+    $bytes = [long]0; $files = 0
+    foreach ($name in $script:OldCacheNames) {
+        $p = Join-Path $VrcDir $name
+        if (-not (Test-Path -LiteralPath $p)) { continue }
+        if (Test-ReparsePoint $p) { return & $blocked "古いキャッシュのフォルダがリンクになっているため、削除しません（$p）" }
+        $m = Measure-Folder $p
+        if ($m.Links -gt 0) { return & $blocked "古いキャッシュの中にリンクがあるため、削除しません（$p）" }
+        $targets.Add($p); $bytes += $m.Bytes; $files += $m.Files
+    }
+    if ($targets.Count -eq 0) { return & $blocked '元の場所に古いキャッシュはありません' }
+    $newNative = $cacheDir -replace '/', '\'
+    $newHasData = (Test-Path -LiteralPath $newNative) -and [bool](Get-ChildItem -LiteralPath $newNative -Force | Select-Object -First 1)
+    return [pscustomobject]@{ Blocked = $null; Targets = @($targets); Bytes = $bytes; Files = $files; NewHasData = $newHasData }
+}
+
+function Remove-OldCache($Info) {
+    if ($Info.Blocked) { throw $Info.Blocked }
+    if (Test-VrcRunning) { throw 'VRChat が起動中です。終了してから削除してください' }
+    foreach ($p in $Info.Targets) {
+        # 調べてから消すまでの間にリンクへ差し替わっていないか、消す直前にもう一度見る
+        if (Test-ReparsePoint $p) { throw "リンクになっているため、削除を中止しました（$p）" }
+        try { [IO.Directory]::Delete($p, $true) }
+        catch { throw "削除できないファイルがありました（$p）。途中まで削除されています。`n$($_.Exception.Message)" }
+    }
+}
+
 if ($NoGui) { return }
 
 # ---------- GUI ----------
@@ -280,7 +337,8 @@ $grpCache.Controls.Add((New-UiLabel '容量上限（GB、30 以上）' 10 78 160
 $numSize = New-Object System.Windows.Forms.NumericUpDown
 $numSize.Location = New-Object System.Drawing.Point(170, 75); $numSize.Size = New-Object System.Drawing.Size(80, 24)
 $numSize.Minimum = $script:MinCacheGB; $numSize.Maximum = 2000
-$grpCache.Controls.AddRange(@($txtCache, $btnCacheBrowse, $btnCacheReset, $numSize))
+$btnDeleteOld = New-UiButton '古いキャッシュを削除...' 440 74 170
+$grpCache.Controls.AddRange(@($txtCache, $btnCacheBrowse, $btnCacheReset, $numSize, $btnDeleteOld))
 $form.Controls.Add($grpCache)
 
 $grpPic = New-Object System.Windows.Forms.GroupBox
@@ -303,7 +361,7 @@ $chkAutoSub.Location = New-Object System.Drawing.Point(14, 312); $chkAutoSub.Siz
 $chkAutoSub.Checked = $true
 $form.Controls.Add($chkAutoSub)
 
-$lblNote = New-UiLabel '指定したフォルダが無ければ適用時に作ります。古いキャッシュは自動では消しません（確認後に手で削除できます）。' 12 340 620
+$lblNote = New-UiLabel '指定したフォルダが無ければ適用時に作ります。古いキャッシュは自動では消しません（「古いキャッシュを削除」で確認してから消せます）。' 12 340 620
 $form.Controls.Add($lblNote)
 $btnOpenOld = New-UiButton '元のキャッシュの場所を開く' 12 370 190
 $btnOpenPics = New-UiButton '写真フォルダを開く' 210 370 140
@@ -343,6 +401,23 @@ $btnOpenPics.Add_Click({
     # 適用直後は移す元と先、それ以外は既定と指定先を開く
     $dirs = $(if ($script:PictureMove) { @($script:PictureMove.From, $script:PictureMove.To) } else { @($PictureDefaultDir, ($txtPic.Text.Trim() -replace '/', '\')) })
     foreach ($d in @($dirs | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -Unique)) { Start-Process explorer.exe ('"{0}"' -f $d) }
+})
+$btnDeleteOld.Add_Click({
+    try {
+        $info = Get-OldCache
+        if ($info.Blocked) { Show-Message $info.Blocked; return }
+        $msg = "元の場所にある古いキャッシュを削除します。`n`n" + ($info.Targets -join "`n")
+        $msg += "`n`n合計 {0:N1} GB（{1:N0} ファイル）" -f ($info.Bytes / 1GB), $info.Files
+        $msg += "`n`nごみ箱には入りません。削除したワールドやアバターは、次に必要になったときに VRChat が再ダウンロードします。"
+        if (-not $info.NewHasData) { $msg += "`n`n※ 新しい保存先にはまだ何もありません。VRChat を一度起動して、新しい場所が使われているのを確かめてから削除するのがおすすめです。" }
+        $msg += "`n`n削除しますか？"
+        $answer = [System.Windows.Forms.MessageBox]::Show($msg, $script:AppName, 'YesNo', 'Warning', 'Button2')
+        if ($answer -ne [System.Windows.Forms.DialogResult]::Yes) { return }
+        Remove-OldCache $info
+        Show-Message ("削除しました。{0} の空きが約 {1:N1} GB 増えました。" -f $VrcDir.Substring(0, 2), ($info.Bytes / 1GB))
+    } catch {
+        Show-Message $_.Exception.Message 'Error'
+    }
 })
 $btnClose.Add_Click({ $form.Close() })
 $btnApply.Add_Click({
