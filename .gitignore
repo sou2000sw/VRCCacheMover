@@ -19,3 +19,6 @@ __pycache__/
 *credential*
 *.key
 id_rsa
+
+# 商品説明などの公開文面の下書き（Obsidian の保管庫で管理する）
+docs/BOOTH_*
