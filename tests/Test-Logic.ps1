@@ -126,6 +126,11 @@ try {
     Assert-True '9 same as vrc dir blocked' ([bool](Get-OldCache).Blocked)
     [IO.File]::WriteAllText($cfgPath, '{"cache_directory":"   "}', $noBom)
     Assert-True '9 blank setting blocked' ([bool](Get-OldCache).Blocked)
+    [IO.File]::WriteAllText($cfgPath, ('{"cache_directory":"' + ($oldCache -replace '\\', '/') + '/sub"}'), $noBom)
+    Assert-True '9 inside target blocked' ([bool](Get-OldCache).Blocked)
+    New-Item -ItemType Directory (Join-Path $newCache 'Cache-WindowsPlayer') -Force | Out-Null
+    [IO.File]::WriteAllText($cfgPath, ('{"cache_directory":"' + ($newCache -replace '\\', '/') + '"}'), $noBom)
+    Assert-True '9 new location in use' ((Get-OldCache).NewHasData)
     [IO.File]::WriteAllText($cfgPath, ('{"cache_directory":"' + ($newCache -replace '\\', '/') + '"}'), $noBom)
     [IO.File]::WriteAllText((Join-Path $oldCache 'ro.bin'), 'x')
     Set-ItemProperty -LiteralPath (Join-Path $oldCache 'ro.bin') -Name IsReadOnly -Value $true

@@ -27,9 +27,12 @@ $stage = Join-Path $dist "VRCCacheMover_v$version"
 if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
 New-Item -ItemType Directory $stage -Force | Out-Null
 Copy-Item (Join-Path $root 'VRCCacheMover.ps1') $stage
-Copy-Item (Join-Path $root 'VRCCacheMover.bat') $stage
-Copy-Item (Join-Path $root 'README.md') (Join-Path $stage 'README.txt')
-Copy-Item (Join-Path $root 'LICENSE') (Join-Path $stage 'LICENSE.txt')
+# .bat と .txt は CRLF にする（LF だけのバッチは cmd が誤動作することがあり、古いメモ帳は改行を表示できない）
+foreach ($pair in @(@('VRCCacheMover.bat', 'VRCCacheMover.bat'), @('README.md', 'README.txt'), @('LICENSE', 'LICENSE.txt'))) {
+    $text = [IO.File]::ReadAllText((Join-Path $root $pair[0]), [Text.Encoding]::UTF8)
+    $text = ($text -replace "`r`n", "`n") -replace "`n", "`r`n"
+    [IO.File]::WriteAllText((Join-Path $stage $pair[1]), $text, (New-Object System.Text.UTF8Encoding($false)))
+}
 
 $zip = Join-Path $dist "VRCCacheMover_v$version.zip"
 if (Test-Path $zip) { Remove-Item $zip -Force }

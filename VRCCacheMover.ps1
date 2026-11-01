@@ -14,7 +14,7 @@ Set-StrictMode -Version 2
 $ErrorActionPreference = 'Stop'
 
 $script:AppName = 'VRC Cache Mover'
-$script:Version = '1.0.1'
+$script:Version = '1.1.0'
 $script:ConfigPath = Join-Path $VrcDir 'config.json'
 $script:MinCacheGB = 30   # 公式: 既定値より小さくはできない
 
@@ -290,8 +290,15 @@ function Get-OldCache {
         $targets.Add($p); $bytes += $m.Bytes; $files += $m.Files
     }
     if ($targets.Count -eq 0) { return & $blocked '元の場所に古いキャッシュはありません' }
-    $newNative = $cacheDir -replace '/', '\'
-    $newHasData = (Test-Path -LiteralPath $newNative) -and [bool](Get-ChildItem -LiteralPath $newNative -Force | Select-Object -First 1)
+    $newFull = Get-NativeFullPath $cacheDir
+    foreach ($t in $targets) {
+        # 手で書いた保存先が消す対象の中を指していたら、それは使用中のキャッシュ
+        if ($newFull -ieq $t -or $newFull.StartsWith($t + '\', [StringComparison]::OrdinalIgnoreCase)) {
+            return & $blocked "キャッシュの保存先が古いキャッシュのフォルダの中を指しているため、削除しません（$newFull）"
+        }
+    }
+    # VRChat は保存先の中に元と同じ名前のフォルダを作る。それがあれば新しい場所が使われている
+    $newHasData = [bool](@($script:OldCacheNames | Where-Object { Test-Path -LiteralPath (Join-Path $newFull $_) -PathType Container }).Count)
     return [pscustomobject]@{ Blocked = $null; Targets = @($targets); Bytes = $bytes; Files = $files; NewHasData = $newHasData }
 }
 
@@ -444,7 +451,7 @@ $btnDeleteOld.Add_Click({
         $msg = "元の場所にある古いキャッシュを削除します。`n`n" + ($info.Targets -join "`n")
         $msg += "`n`n合計 {0:N1} GB（{1:N0} ファイル）" -f ($info.Bytes / 1GB), $info.Files
         $msg += "`n`nごみ箱には入りません。削除したワールドやアバターは、次に必要になったときに VRChat が再ダウンロードします。"
-        if (-not $info.NewHasData) { $msg += "`n`n※ 新しい保存先にはまだ何もありません。VRChat を一度起動して、新しい場所が使われているのを確かめてから削除するのがおすすめです。" }
+        if (-not $info.NewHasData) { $msg += "`n`n※ 新しい保存先にはまだキャッシュがありません。VRChat を一度起動して、新しい場所が使われているのを確かめてから削除するのがおすすめです。" }
         $msg += "`n`n削除しますか？"
         $answer = [System.Windows.Forms.MessageBox]::Show($msg, $script:AppName, 'YesNo', 'Warning', 'Button2')
         if ($answer -ne [System.Windows.Forms.DialogResult]::Yes) { return }
