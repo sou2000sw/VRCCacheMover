@@ -77,6 +77,31 @@ try {
     # 7. 参照ボタン用の専用フォルダ付与
     Assert-True '7 drive root gets subfolder' ((Join-AutoSubfolder 'H:\' 'VRCCache') -eq 'H:\VRCCache')
     Assert-True '7 no double subfolder' ((Join-AutoSubfolder 'H:\VRCCache' 'VRCCache') -eq 'H:\VRCCache')
+
+    # 8. 写真の移動案内（移す元と先を示すだけで、ファイルは動かさない）
+    $picOld = Join-Path $work 'pic_old'
+    $picNew = Join-Path $work 'pic_new'
+    $picEmpty = Join-Path $work 'pic_empty'
+    New-Item -ItemType Directory (Join-Path $picOld '2025-04') -Force | Out-Null
+    [IO.File]::WriteAllText((Join-Path $picOld '2025-04\a.png'), 'x')
+    New-Item -ItemType Directory $picEmpty -Force | Out-Null
+    $m = Get-PictureMove ($picOld -replace '\\', '/') $picNew
+    Assert-True '8 move found' ($m -and $m.From -ieq $picOld -and $m.To -ieq $picNew)
+    Assert-True '8 same folder no move' ($null -eq (Get-PictureMove ($picOld -replace '\\', '/') $picOld))
+    Assert-True '8 empty folder no move' ($null -eq (Get-PictureMove $picEmpty $picNew))
+    Assert-True '8 missing folder no move' ($null -eq (Get-PictureMove (Join-Path $work 'nothing') $picNew))
+    Assert-True '8 linked default no move' ($null -eq (Get-PictureMove '' $picNew))
+    $savedOd = $env:OneDrive
+    try {
+        $env:OneDrive = $work
+        Assert-True '8 onedrive detected' ((Get-PictureMove $picOld $picNew).OnOneDrive)
+        $env:OneDrive = Join-Path $work 'pic_ol'   # 名前の前方一致だけでは OneDrive 扱いしない
+        Assert-True '8 onedrive prefix only' (-not (Get-PictureMove $picOld $picNew).OnOneDrive)
+    } finally { $env:OneDrive = $savedOd }
+    [IO.File]::WriteAllText($cfgPath, ('{"picture_output_folder":"' + ($picOld -replace '\\', '/') + '"}'), $noBom)
+    $p8 = New-ChangePlan -CacheDir '' -CacheSizeGB 30 -PictureDir $picNew -SplitByDate $true
+    Assert-True '8 plan has move' ($p8.PictureMove -and $p8.PictureMove.From -ieq $picOld)
+    Assert-True '8 photo untouched' (Test-Path (Join-Path $picOld '2025-04\a.png'))
 } finally {
     if (Test-Path $picDef) { cmd /c rmdir "$picDef" | Out-Null }
 }

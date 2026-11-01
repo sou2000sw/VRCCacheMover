@@ -94,6 +94,29 @@ function Get-PictureLinkInfo {
     return [pscustomobject]@{ LinkType = $item.LinkType; Target = (@($item.Target) -join ', ') }
 }
 
+function Test-UnderOneDrive([string] $Path) {
+    # ピクチャを OneDrive に同期している人は多い。外へ移すとクラウド側からも消える
+    $full = Get-NativeFullPath $Path
+    foreach ($root in @($env:OneDrive, $env:OneDriveConsumer, $env:OneDriveCommercial)) {
+        if (-not $root) { continue }
+        $r = $root.TrimEnd('\')
+        if ($full -ieq $r -or $full.StartsWith($r + '\', [StringComparison]::OrdinalIgnoreCase)) { return $true }
+    }
+    return $false
+}
+
+function Get-PictureMove([string] $OldSetting, [string] $NewSetting) {
+    # 保存先を変えても以前の写真は動かさない。移す元と先を示すだけ（移動はエクスプローラーで本人がする）
+    $from = $(if ($OldSetting.Trim()) { $OldSetting } else { $PictureDefaultDir })
+    $to = $(if ($NewSetting.Trim()) { $NewSetting } else { $PictureDefaultDir })
+    if (Test-SamePath $from $to) { return $null }
+    $fromNative = $from -replace '/', '\'
+    if (-not (Test-Path -LiteralPath $fromNative)) { return $null }
+    if ((Get-Item -LiteralPath $fromNative -Force).LinkType) { return $null }   # リンクは既存の警告に任せる
+    if (-not (Get-ChildItem -LiteralPath $fromNative -Force | Select-Object -First 1)) { return $null }
+    return [pscustomobject]@{ From = (Get-NativeFullPath $from); To = (Get-NativeFullPath $to); OnOneDrive = (Test-UnderOneDrive $from) }
+}
+
 function Test-TargetFolder([string] $Path, [int] $NeedGB) {
     $errs = New-Object System.Collections.Generic.List[string]
     $warns = New-Object System.Collections.Generic.List[string]
@@ -136,6 +159,7 @@ function New-ChangePlan {
     $errs = New-Object System.Collections.Generic.List[string]
     $warns = New-Object System.Collections.Generic.List[string]
     $folders = New-Object System.Collections.Generic.List[string]
+    $oldPic = [string](Get-ConfigValue $data 'picture_output_folder')
 
     if ($CacheDir.Trim()) {
         $check = Test-TargetFolder $CacheDir ($CacheSizeGB + 5)
@@ -172,7 +196,8 @@ function New-ChangePlan {
     if (Test-VrcRunning) { $errs.Add('VRChat が起動中です。終了してから適用してください') }
     if (-not (Test-Path -LiteralPath $VrcDir)) { $errs.Add("VRChat のフォルダがありません（$VrcDir）。一度 VRChat を起動してから実行してください") }
 
-    return [pscustomobject]@{ Data = $data; Errors = @($errs); Warnings = @($warns); Folders = @($folders) }
+    $move = Get-PictureMove $oldPic $PictureDir
+    return [pscustomobject]@{ Data = $data; Errors = @($errs); Warnings = @($warns); Folders = @($folders); PictureMove = $move }
 }
 
 function Invoke-ChangePlan($Plan) {
@@ -281,9 +306,11 @@ $form.Controls.Add($chkAutoSub)
 $lblNote = New-UiLabel '指定したフォルダが無ければ適用時に作ります。古いキャッシュは自動では消しません（確認後に手で削除できます）。' 12 340 620
 $form.Controls.Add($lblNote)
 $btnOpenOld = New-UiButton '元のキャッシュの場所を開く' 12 370 190
+$btnOpenPics = New-UiButton '写真フォルダを開く' 210 370 140
 $btnApply = New-UiButton '適用' 436 370 96
 $btnClose = New-UiButton '閉じる' 540 370 92
-$form.Controls.AddRange(@($btnOpenOld, $btnApply, $btnClose))
+$form.Controls.AddRange(@($btnOpenOld, $btnOpenPics, $btnApply, $btnClose))
+$script:PictureMove = $null   # 直前の適用で写真の保存先が変わったときの移す元と先
 
 function Update-FormFromConfig {
     $running = Test-VrcRunning
@@ -312,6 +339,11 @@ $btnPicBrowse.Add_Click({
 })
 $btnPicReset.Add_Click({ $txtPic.Text = ''; $chkSplit.Checked = $true })
 $btnOpenOld.Add_Click({ if (Test-Path -LiteralPath $VrcDir) { Start-Process explorer.exe $VrcDir } })
+$btnOpenPics.Add_Click({
+    # 適用直後は移す元と先、それ以外は既定と指定先を開く
+    $dirs = $(if ($script:PictureMove) { @($script:PictureMove.From, $script:PictureMove.To) } else { @($PictureDefaultDir, ($txtPic.Text.Trim() -replace '/', '\')) })
+    foreach ($d in @($dirs | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -Unique)) { Start-Process explorer.exe ('"{0}"' -f $d) }
+})
 $btnClose.Add_Click({ $form.Close() })
 $btnApply.Add_Click({
     try {
@@ -319,12 +351,19 @@ $btnApply.Add_Click({
         if ($plan.Errors.Count -gt 0) { Show-Message ("適用できません:`n`n" + ($plan.Errors -join "`n")) 'Error'; return }
         $msg = "config.json を次の内容にします。`n`n" + (Get-PlanPreview $plan)
         if ($plan.Warnings.Count -gt 0) { $msg += "`n`n注意:`n" + ($plan.Warnings -join "`n") }
+        if ($plan.PictureMove) { $msg += "`n`n以前の写真は $($plan.PictureMove.From) に残ります（このツールは移しません）" }
         $msg += "`n`n適用しますか？"
         $answer = [System.Windows.Forms.MessageBox]::Show($msg, $script:AppName, 'YesNo', 'Question')
         if ($answer -ne [System.Windows.Forms.DialogResult]::Yes) { return }
         $backup = Invoke-ChangePlan $plan
         $done = '適用しました。次に VRChat を起動したときから反映されます。'
         if ($backup) { $done += "`n`n元の設定のバックアップ:`n$backup" }
+        $script:PictureMove = $plan.PictureMove
+        if ($plan.PictureMove) {
+            $done += "`n`n以前の写真は次の場所に残っています:`n$($plan.PictureMove.From)`n新しい写真の保存先:`n$($plan.PictureMove.To)"
+            $done += "`n`n移したい場合は「写真フォルダを開く」で両方を開き、エクスプローラーで移してください。"
+            if ($plan.PictureMove.OnOneDrive) { $done += "`n※ 以前の写真フォルダは OneDrive の中にあります。OneDrive の外へ移すと、OneDrive（クラウド）からも消えます。" }
+        }
         Show-Message $done
         Update-FormFromConfig
     } catch {
